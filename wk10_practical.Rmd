@@ -1,6 +1,382 @@
 GEOG0114 - Principles of Spatial Analysis Week 10 Practical: Geographically Weighted Regression
 
 ```{r}
+# load the following packages
+library(sf)
+library(tmap)
+library(spdep)
+library(sp)
+library(here)
+library(tidyverse)
+library(ggplot2)
+library(scales)
+library(broom)
+```
 
+```{r}
+# library spgwr needs the terra and spDataLarge packages installed in the background for it to work
+library(spgwr)
+library(car)
+```
+
+```{r}
+# import csv and sf datasets for analysis
+# add house price and covariate data
+data.london <- read_csv(here::here("Week 9 - Dataset", "London LSOA 2015 data.csv"))
+
+# import shapefile data
+lsoa.shp <- st_read(here::here("Week 9 - Dataset", "London LSOA Areas.shp"))
+borough.shp <- st_read(here::here("Week 9 - Dataset", "London Borough Areas.shp"))
+
+# inspect csv
+data.london %>% 
+  head(., n = 10)
+
+# inspect shapefiles
+View(lsoa.shp)
+summary(data.london)
+qtm(lsoa.shp)
+qtm(borough.shp)
+
+# inspect - spatial configuration of London LSOAs with the Boroughs superimposed
+tm_shape(lsoa.shp) +
+  tm_polygons() +
+tm_shape(borough.shp) +
+  tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+tm_compass(position = c("right", "top"), type = "arrow") +
+tm_scale_bar(position = c("left", "bottom"))
+```
+
+```{r}
+# inspect the distribution of variables in data.london
+ggplot(data.london, aes(AVEPRICE)) +
+  geom_histogram(bins = 15, alpha = 0.5, fill = "blue") +
+  stat_bin(bins = 15, geom = "text",aes(label = comma(..count..)), vjust = -0.5, size = 3.5) +
+  labs(title = "Distribution of Average House Price per LSOA in London") +
+  xlab("Price") +
+  ylab("Count") +
+  theme(plot.title = element_text(face = "bold", hjust = 0.4)) +
+  scale_x_continuous(labels = label_comma())
+
+?theme()
+
+ggplot(data.london, aes(AVEINCOME)) +
+  geom_histogram(bins = 15, alpha = 0.5, fill = "blue") +
+  stat_bin(bins = 15, geom = "text",aes(label = comma(..count..)), vjust = -0.5, size = 3.5) +
+  labs(title = "Distribution of Average Income per LSOA in London") +
+  xlab("Income") +
+  ylab("Count") +
+  theme(plot.title = element_text(face = "bold", hjust = 0.4)) +
+  scale_x_continuous(labels = label_comma())
+
+ggplot(data.london, aes(IMDSCORE)) +
+  geom_histogram(bins = 15, alpha = 0.5, fill = "blue") +
+  stat_bin(bins = 15, geom = "text",aes(label = comma(..count..)), vjust = -0.5, size = 3.5) +
+  labs(title = "Distribution of IMD Score per LSOA in London") +
+  xlab("IMD Score") +
+  ylab("Count") +
+  theme(plot.title = element_text(face = "bold", hjust = 0.4)) +
+  scale_x_continuous(labels = label_comma())
+
+ggplot(data.london, aes(PTAINDEX)) +
+  geom_histogram(bins = 15, alpha = 0.5, fill = "blue") +
+  stat_bin(bins = 15, geom = "text",aes(label = comma(..count..)), vjust = -0.5, size = 3.5) +
+  labs(title = "Distribution of PTA Index per LSOA in London") +
+  xlab("PTA Index") +
+  ylab("Count") +
+  theme(plot.title = element_text(face = "bold", hjust = 0.4)) +
+  scale_x_continuous(labels = label_comma())
+
+ggplot(data.london, aes(PTACAT)) +
+  geom_bar(alpha = 0.5, fill = "blue", na.rm = TRUE) +
+  geom_text(stat = "count", aes(label = comma(..count..)), vjust = -0.5, size = 3.5) +
+  labs(title = "Distribution of PTA Index per LSOA in London") +
+  xlab("PTA Index") +
+  ylab("Count") +
+  theme(plot.title = element_text(face = "bold", hjust = 0.4))
+
+# there seems to be an NA value in the PTACAT colummn - we can see that its LSOACODE is E01003017 below
+# given the PTAINDEX value, it would be classified as 5. Highest
+data.london %>% 
+  filter(is.na(data.london$PTACAT))
+
+# let's insert "5. Highest" to the null value
+data.london <- data.london %>% 
+  mutate(PTACAT = ifelse(LSOACODE == "E01003017", "5. Highest", PTACAT))
+
+# let's run this again - we do not have NA values anymore
+ggplot(data.london, aes(PTACAT)) +
+  geom_bar(alpha = 0.5, fill = "blue", na.rm = TRUE) +
+  geom_text(stat = "count", aes(label = comma(..count..)), vjust = -0.5, size = 3.5) +
+  labs(title = "Distribution of PTA Index per LSOA in London") +
+  xlab("PTA Index") +
+  ylab("Count") +
+  theme(plot.title = element_text(face = "bold", hjust = 0.4))
+```
+
+```{r}
+# we can also make some scatterplots to explore relationships
+# from the histogram distributions above, we have a rough idea of which variables we should log-transform to make them more normally distributed
+# log(AVEINCOME) and log(AVEPRICE})
+ggplot(data.london, aes(x = log10(AVEINCOME), y = log10(AVEPRICE))) +
+  geom_point(alpha = 0.5, colour = "blue") +
+  labs(title = "Relationship between AVEINCOME and AVEPRICE") +
+  xlab("log(AVEINCOME)") +
+  ylab("log(AVEPRICE)") +
+  theme(plot.title = element_text(face = "bold", hjust = 0.4))
+
+# IMDSCORE and log(AVEPRICE})
+ggplot(data.london, aes(x = log10(IMDSCORE), y = log10(AVEPRICE))) +
+  geom_point(alpha = 0.5, colour = "blue") +
+  labs(title = "Relationship between IMDSCORE and AVEPRICE") +
+  xlab("IMDSCORE") +
+  ylab("log(AVEPRICE)") +
+  theme(plot.title = element_text(face = "bold", hjust = 0.4))
+
+# log(PTAINDEX) and log(AVEPRICE})
+ggplot(data.london, aes(x = log10(PTAINDEX), y = log10(AVEPRICE))) +
+  geom_point(alpha = 0.5, aes(colour = factor(PTACAT))) +
+  labs(title = "Relationship between PTAINDEX and AVEPRICE") +
+  xlab("PTAINDEX") +
+  ylab("log(AVEPRICE)") +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+```
+
+
+```{r}
+# use the merge() function to bring together the LSOA shapefile and house price dataset
+spatialdatafile <- lsoa.shp %>% 
+  merge(., data.london, by.x = "LSOACODE", by.y = "LSOACODE")
+
+# inspect
+spatialdatafile %>% 
+  head(., n = 10)
+
+# add log10(AVEPRICE) column to dataframe for inspection
+spatialdatafile <- spatialdatafile %>% 
+  mutate(logAVEPRICE = log10(AVEPRICE))
+
+# inspect AVEPRICE column on map
+tm_shape(spatialdatafile) +
+  tm_polygons("logAVEPRICE", style = "fisher", palette = c("blue", "white", "red"), midpoint = NA, alpha = 0.5)
+```
+
+Implementing the Linear Regression Model
+
+- Obtaining the residuals from a non-spatial model
+
+```{r}
+# in order to implement a GWR, we need to first test the residuals for evidence of spatial autocorrelation
+# to do this, we must first run a linear regression model to get the residuals
+
+# lm() function build a regression model and stores model output into the object modelMLR
+modelMLR <- lm(log10(AVEPRICE) ~ log10(AVEINCOME) + log10(IMDSCORE) + log10(PTAINDEX),
+               data = spatialdatafile)
+
+# include the 'scipen = 7' argument in the summary() function to remove scientific notations
+options(scipen = 7)
+
+# summary() calss report the output stored in object modelMLR
+summary(modelMLR)
+
+# or tidy() from the broom package
+tidy(modelMLR)
+```
+
+You can check if we have multicollinearity among the independent variables by using the `vif()` function to ensure the independent variables are not correlated with each other.
+Ensure that their Variance Inflation Factor (VIF) is less than 10. If bigger than 10, those variables will have to be discarded from the model
+
+```{r}
+vif(modelMLR)
+# none of the variables' VIFs exceed 10, so we do not need to discard any
+```
+
+Now, extract the residuals and deposit them into our spatial dataframe
+
+```{r}
+# extract residuals from ModelLMR object and dump into spatialdatafile and call the column RESIDUALS
+spatialdatafile$RESIDUALS <- modelMLR$residuals
+```
+
+```{r}
+# output shows mapped residuals
+tm_shape(spatialdatafile) +
+  tm_polygons("RESIDUALS", style = "cont", midpoint = 0, border.alpha = 0, palette = "-RdBu") +
+tm_shape(borough.shp) +
+  tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+tm_text("BOROUGHN", size = "AREA") +
+tm_compass(position = c("right", "top")) +
+tm_scale_bar(position = c("left", "bottom")) +
+tm_layout(frame = FALSE, legend.title.size = 0.5, legend.text.size = 0.5)
+```
+
+Notice the spatial patterning and clusters of the LSOA areas where there's an over-prediction of the house prices (i.e. areas that have negative residuals or blue tones) and under-prediction (i.e. areas that have positive residuals or red tones). This visual inspection of the residuals is an indication that spatial autocorrelation may be present. We can confirm by using the Moran's I test
+
+```{r}
+# generate unique number for each row
+spatialdatafile$ROWNUM <- 1:nrow(spatialdatafile)
+
+# we need to coerce the sf spatialdatafile object into a new sp object
+spatialdatafile_sp <- as(spatialdatafile, "Spatial")
+# create spatial weights matrix for areas
+
+weights <- poly2nb(spatialdatafile_sp, row.names = spatialdatafile_sp$ROWNUM)
+weights_matrix <- nb2mat(weights, style = 'B')
+residual_weights_matrix <- mat2listw(weights_matrix, style = 'W')
+
+# run the test on the regression model output object modelMLR using lm.morantest()
+lm.morantest(modelMLR, residual_weights_matrix, alternative = "two.sided")
+```
+
+Moran's I value is 0.475 and is statistically significant (p-value < 0.001). This indicates strong evidence of spatial autocorrelation.
+Now, let's see how we can use a different spatial model such as GWR to derive local associations for each area
+
+Preparing the data for GWR analysis
+
+```{r}
+# calculate the centroids from geometries
+spatialdatafile <- st_centroid(spatialdatafile)
+
+# insert coordinates into spatialdatafile. X is longitude and Y is latitude
+spatialdatafile <- cbind(spatialdatafile, st_coordinates(spatialdatafile))
+```
+
+Fitting a GWR using `gwr.sel()` and `gwr()`
+
+Adaptive Bandwidth is the preferred approach since the algorithm will compute and specify the adaptive kernel that involves using varying bandwidths to define a region around regression points.
+
+Let's find the optimal bandwidth using the Adaptive Bandwidth approach using `gwr.sel()` function
+
+```{r}
+# find the bandwidth
+BwG <- gwr.sel(log10(AVEPRICE) ~ log10(AVEINCOME) + log10(IMDSCORE) + log10(PTAINDEX),
+               data = spatialdatafile,
+               coords = cbind(spatialdatafile$X, spatialdatafile$Y),
+               adapt = TRUE)
+
+# see optimal bandwidth
+BwG
+```
+
+```{r}
+# start timer to time how long it takes to run a grw() on computer
+start.timer <- proc.time()
+
+# gwr() model. You need hatmatrix and se.fit specified as TRUE for testing statistical significance
+grw.model <- gwr(log10(AVEPRICE) ~ log10(AVEINCOME) + log10(IMDSCORE) + log10(PTAINDEX),
+                 data = spatialdatafile,
+                 coords = cbind(spatialdatafile$X, spatialdatafile$Y),
+                 adapt = BwG,
+                 hatmatrix = TRUE,
+                 se.fit = TRUE)
+
+# end timer and calcuate how long it took for the gwr model to complete churning
+end.timer <- proc.time() - start.timer
+
+# report time taken
+end.timer
+```
+
+```{r}
+# see the results - we need to rename the model as we named it wrongly above and can't risk running it again...
+gwr.model <- grw.model
+
+gwr.model
+```
+
+```{r}
+# the results are always stored as a SDF object within the gwr.model output we geneterated from the gwr(). We can extract the SDF object according with the code below.
+gwr.data <- as.data.frame(gwr.model$SDF)
+
+# save the output as a csv so you don't have to run the model again and use it in the future
+write.csv(gwr.data, file = "gwr_output.csv", row.names = FALSE)
+```
+
+```{r}
+# create neat spatial dataframe by keeping first two columns
+lsoa_result <- spatialdatafile[, c(1, 2)]
+
+# inspect column names to extract
+colnames(gwr.data)
+      
+# insert coefficients into lsoa_result object
+lsoa_result$CoefLogInc <- gwr.data[, "log10.AVEINCOME."]
+lsoa_result$CoefLogIMD <- gwr.data[, "log10.IMDSCORE."]
+lsoa_result$CoefLogPTAL <- gwr.data[, "log10.PTAINDEX."]
+
+# insert standard errors into lsoa_result object
+lsoa_result$SELogInc <- gwr.data[, "log10.AVEINCOME._se"]
+lsoa_result$SELogIMD <- gwr.data[, "log10.IMDSCORE._se"]
+lsoa_result$SELogPTAL <- gwr.data[, "log10.PTAINDEX._se"]
+
+# insert localR2 estimates into lsoa_result object
+lsoa_result$localR2 <- gwr.data[, "localR2"]
+
+# inspect
+lsoa_result %>% 
+  head(., n = 10)
+```
+
+Using deprivation score, we report its associated impact on house prices across the LSOAs in London by mapping its LSOA-specific coefficients using the code:
+
+```{r}
+tm_shape(lsoa_result) +
+  tm_fill("CoefLogIMD", title = "Coefficient: Log(IMD) [%]", style = "cont", midpoint = 0, palette = "RdBu") +
+tm_shape(borough.shp) +
+  tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+tm_text("BOROUGHN", size = "AREA") +
+tm_compass(position = c("right", "top")) +
+tm_scale_bar(position = c("left", "bottom")) +
+tm_layout(frame = FALSE, legend.title.size = 1, legend.text.size = 1)
+```
+
+```{r}
+# also use summary() to help with the interpretation
+summary(lsoa_result$CoefLogIMD)
+```
+
+The GWR outputs reveal that local coefficients range from a minium value of -0.946 to a maximum value of 1.085, indicating that one percentage point increase in the levels of deprivation in LSOAs of London is associated with a reduction of 0.946% in house prices in some LSOAs and (weirdly) an increase of 1.085% in others
+
+Statistical Significance
+- For a sample that is sufficiently large, if you take a coefficient estimate and divide it by its corresponding standard error, you get an absolute value (i.e. t-score) that exceeds either -1.96 or +1.96, which indicates statistical significance
+
+```{r}
+# compute t-score statistic
+lsoa_result$tstatIMD <- lsoa_result$CoefLogIMD / lsoa_result$SELogIMD
+
+# create significance column with "Reduction: Significant", "Not Significant", "Increase: Significant"
+lsoa_result$significant <- cut(lsoa_result$tstatIMD,
+                               breaks = c(min(lsoa_result$tstatIMD), -2, 2, max(lsoa_result$tstatIMD)),
+                               labels = c("Reduction: Significant", "Not Significant", "Increase: Significant"))
+
+# inspect
+lsoa_result %>% 
+  head(., n = 10)
+```
+
+```{r}
+tm_shape(lsoa_result) +
+  tm_fill("significant", title = "", style = "cat", labels = c("Reduction: Significant", "Not Significant", "Increase: Significant"), palette = c("red", "white", "blue")) +
+tm_shape(borough.shp) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+  tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+tm_text("BOROUGHN", size = "AREA") +
+tm_compass(position = c("right", "top")) +
+tm_scale_bar(position = c("left", "bottom")) +
+tm_layout(frame = FALSE, legend.title.size = 1, legend.text.size = 1)
+```
+
+Let's finally map the local R-Square values to examine model performance
+
+```{r}
+# map LocalR2 to exmaine model performance
+tm_shape(lsoa_result) +
+  tm_fill("localR2", title = "Adaptive: Local R2", style = "cont", midpoint = 0.5, palette = "Spectral") +
+tm_shape(borough.shp) +
+  tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+tm_text("BOROUGHN", size = "AREA") +
+tm_compass(position = c("right", "top")) +
+tm_scale_bar(position = c("left", "bottom")) +
+tm_layout(frame = FALSE, legend.title.size = 1, legend.text.size = 1)
+  
 ```
 
